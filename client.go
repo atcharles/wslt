@@ -8,29 +8,49 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+var (
+	wsClient *Client
+)
+
+func NewClient() *Client {
+	if wsClient == nil {
+		wsClient = new(Client)
+		wsClient.reset()
+	}
+	return wsClient
+}
+
 type ClientBusinessHandler func(*ClientContext)
 
 type (
-	WsClient struct {
-		mu sync.Mutex
-
-		businessHandlers map[string]ClientBusinessHandler
-	}
-
 	Client struct {
 		mu   sync.Mutex
 		conn *websocket.Conn
 
-		ws        *WsClient
 		closed    bool
-		closeChan chan byte
+		CloseChan chan byte
 
 		sent chan *WsMessage
+
+		businessHandlers map[string]ClientBusinessHandler
 	}
 )
 
+func (c *Client) Reset() {
+	c.reset()
+}
+
+func (c *Client) ReadHandle(typeStr string, handler ClientBusinessHandler) {
+	c.mu.Lock()
+	c.businessHandlers[typeStr] = handler
+	c.mu.Unlock()
+}
+
 //msgData is a BusinessMessage's RawData
 func (c *Client) SendMessage(typeString string, msgData interface{}) {
+	if c.IsClosed() {
+		return
+	}
 	var (
 		err error
 		msg *WsMessage
@@ -49,10 +69,12 @@ func (c *Client) SendMessage(typeString string, msgData interface{}) {
 
 func (c *Client) Dial(urlStr string) (err error) {
 	c.conn, _, err = websocket.DefaultDialer.Dial(urlStr, nil)
-	if err != nil {
-		return
-	}
 	return
+}
+
+func (c *Client) Pump() {
+	go c.readPump()
+	go c.writePump()
 }
 
 func (c *Client) IsClosed() bool {
@@ -61,17 +83,17 @@ func (c *Client) IsClosed() bool {
 	return c.closed
 }
 
-func (w *WsClient) runReadHandle(ctx *ClientContext) {
+func (c *Client) runReadHandle(ctx *ClientContext) {
 	defer func() {
 		if p := recover(); p != nil {
 			StdLogger.Printf("run handler error:%v\n", p)
 		}
 	}()
-	w.mu.Lock()
-	if handler, has := w.businessHandlers[ctx.Message.StringType]; has {
+	c.mu.Lock()
+	if handler, has := c.businessHandlers[ctx.Message.StringType]; has {
 		go handler(ctx)
 	}
-	w.mu.Unlock()
+	c.mu.Unlock()
 }
 
 func (c *Client) receiveDeadline() (err error) {
@@ -109,7 +131,7 @@ func (c *Client) writePump() {
 			if err = c.conn.WriteMessage(message.MessageType, message.Data); err != nil {
 				return
 			}
-		case <-c.closeChan:
+		case <-c.CloseChan:
 			return
 		case <-ticker.C:
 			if err = c.conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
@@ -134,7 +156,7 @@ func (c *Client) readPump() {
 			biMessage   *BusinessMessage
 		)
 		select {
-		case <-c.closeChan:
+		case <-c.CloseChan:
 			return
 		default:
 			messageType, messageData, err = c.conn.ReadMessage()
@@ -157,16 +179,19 @@ func (c *Client) readPump() {
 				Client:  c,
 				Message: biMessage,
 			}
-			c.ws.runReadHandle(ctx)
+			c.runReadHandle(ctx)
 		}
 	}
 }
 
 func (c *Client) reset() {
 	*c = Client{
-		conn:      nil,
-		closed:    false,
-		closeChan: make(chan byte, 1),
+		mu:               sync.Mutex{},
+		conn:             nil,
+		closed:           false,
+		CloseChan:        make(chan byte, 1),
+		sent:             make(chan *WsMessage, 256),
+		businessHandlers: make(map[string]ClientBusinessHandler),
 	}
 }
 
@@ -177,6 +202,6 @@ func (c *Client) close() {
 		return
 	}
 	c.closed = true
-	close(c.closeChan)
+	close(c.CloseChan)
 	close(c.sent)
 }
