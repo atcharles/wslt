@@ -23,19 +23,14 @@ func (w *WSocket) Handler(connector Connector) http.HandlerFunc {
 			webCtx.JSON(400, "不是一个WebSocket链接")
 			return
 		}
-		var (
-			conn       *websocket.Conn
-			connection *Connection
-		)
+		var conn *websocket.Conn
 		conn, err = upgradeOption.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
-		if connection, err = newConnection(connector, conn); err != nil {
-			webCtx.JSON(400, err.Error())
+		if _, err = newConnection(connector, conn); err != nil {
 			return
 		}
-		wSocket.register <- connection.connector
 		return
 	}
 }
@@ -69,6 +64,14 @@ func (w *WSocket) addConnections(sid int64, conn *Connection) {
 	w.mu.Unlock()
 }
 
+func (w *WSocket) removeConnection(sid int64) {
+	w.mu.Lock()
+	if _, ok := w.connections[sid]; !ok {
+		delete(w.connections, sid)
+	}
+	w.mu.Unlock()
+}
+
 func (w *WSocket) Session() *Session {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -90,26 +93,26 @@ func (w *WSocket) runReadHandle(ctx *Context) {
 
 func (w *WSocket) ReadHandle(msgType string, handler BusinessHandler) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if _, has := w.businessHandlers[msgType]; has {
 		panic(fmt.Sprintf("BusinessHandler type:%s exists", msgType))
 	}
 	w.businessHandlers[msgType] = handler
+	w.mu.Unlock()
 }
 
 func (w *WSocket) Len() (n int) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	n = len(w.connections)
+	w.mu.Unlock()
 	return
 }
 
 func (w *WSocket) IterationConnections(fn IterationConnectionsFunc) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	for key, value := range w.connections {
 		fn(key, value)
 	}
+	w.mu.Unlock()
 }
 
 func newWSocket() *WSocket {
@@ -141,20 +144,14 @@ func (w *WSocket) run() {
 		case cn := <-w.unregister:
 			cn.Connection().close()
 		case msg := <-w.broadcast:
-			if err := w.sendMessageToAll(msg); err != nil {
-				StdLogger.Printf("broadcast send message error:%s\n", err.Error())
+			for _, cn := range w.connections {
+				err := cn.Connection().sendBusinessMessage(msg)
+				if err != nil {
+					StdLogger.Printf("broadcast send message error:%s\n", err.Error())
+				}
 			}
-		default:
-			//缓冲区写满,堵塞
 		}
 	}
-}
-
-func (w *WSocket) sendMessageToAll(msg *BusinessMessage) (err error) {
-	for _, cn := range w.connections {
-		err = cn.Connection().sendBusinessMessage(msg)
-	}
-	return
 }
 
 func (w *WSocket) SendToAll(msgType string, data interface{}) (err error) {
@@ -162,9 +159,6 @@ func (w *WSocket) SendToAll(msgType string, data interface{}) (err error) {
 	if msg, err = NewBusinessMessage(msgType, data); err != nil {
 		return
 	}
-	select {
-	case w.broadcast <- msg:
-	default:
-	}
+	w.broadcast <- msg
 	return
 }

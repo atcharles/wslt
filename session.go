@@ -79,7 +79,7 @@ func (s *Session) GetSidsByConnectorID(ctID int64) (sids []int64) {
 //OnWsClose while a ws conn closed, the sid minus one
 func (s *Session) OnWsClose(cid, sid int64) {
 	s.mu.Lock()
-	s.mu.Unlock()
+	defer s.mu.Unlock()
 	s.unUsedSids = append(s.unUsedSids, sid)
 	var (
 		conSlice []int64

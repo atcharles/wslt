@@ -28,6 +28,18 @@ type (
 	}
 )
 
+func (c *Connection) SessionID() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sessionID
+}
+
+func (c *Connection) Connector() Connector {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connector
+}
+
 func (c *Connection) SendMessage(businessType string, businessMessage interface{}) (err error) {
 	var msg *BusinessMessage
 	if msg, err = NewBusinessMessage(businessType, businessMessage); err != nil {
@@ -51,6 +63,7 @@ func (c *Connection) sendBusinessMessage(msg *BusinessMessage) (err error) {
 	case c.sent <- wMsg:
 	default:
 		//缓冲区写满
+		StdLogger.Printf("can't set msg to sent channel")
 		c.close()
 	}
 	return
@@ -60,6 +73,12 @@ func (c *Connection) IsClosed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.closed
+}
+
+func (c *Connection) GetConn() *websocket.Conn {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn
 }
 
 func (c *Connection) add() {
@@ -72,21 +91,19 @@ func (c *Connection) add() {
 }
 
 func (c *Connection) close() {
-	_ = c.conn.Close()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return
 	}
+	_ = c.conn.Close()
 	close(c.sent)
 	c.closed = true
 	close(c.closeChan)
 	if c.sessionID == 0 {
 		return
 	}
-	wSocket.mu.Lock()
-	defer wSocket.mu.Unlock()
-	delete(wSocket.connections, c.sessionID)
+	wSocket.removeConnection(c.sessionID)
 	//remove connector's sid
 	globalSession.OnWsClose(c.connector.GetID(), c.sessionID)
 }
@@ -94,12 +111,20 @@ func (c *Connection) close() {
 func (c *Connection) readPump() {
 	var err error
 	defer func() {
+		defer func() {
+			if err != nil {
+				StdLogger.Printf("readPump error:%s\n", err.Error())
+			} else {
+				StdLogger.Printf("readPump return whith no error")
+			}
+		}()
 		c.close()
 	}()
+	//************IMPORT****************
+	c.conn.SetReadLimit(maxMessageSize)
+	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(string) error { _ = c.conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
 	for {
-		if err = c.receiveDeadline(); err != nil {
-			return
-		}
 		var (
 			messageType int
 			messageData []byte
@@ -112,7 +137,7 @@ func (c *Connection) readPump() {
 			if c.IsClosed() {
 				return
 			}
-			messageType, messageData, err = c.conn.ReadMessage()
+			messageType, messageData, err = c.GetConn().ReadMessage()
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					//log ...
@@ -141,15 +166,15 @@ func (c *Connection) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	var err error
 	defer func() {
-		c.close()
 		if err != nil {
 			StdLogger.Printf("writePump error:%s\n", err.Error())
+		} else {
+			StdLogger.Printf("wriePump return whith no error")
 		}
+		c.close()
 	}()
 	for {
-		if err = c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
-			return
-		}
+		_ = c.GetConn().SetWriteDeadline(time.Now().Add(writeWait))
 		select {
 		case message, ok := <-c.sent:
 			if !ok {
@@ -157,29 +182,20 @@ func (c *Connection) writePump() {
 				if c.IsClosed() {
 					return
 				}
-				err = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				err = c.GetConn().WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			if err = c.conn.WriteMessage(message.MessageType, message.Data); err != nil {
+			if err = c.GetConn().WriteMessage(message.MessageType, message.Data); err != nil {
 				return
 			}
 		case <-c.closeChan:
 			return
 		case <-ticker.C:
-			if err = c.conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+			if err = c.GetConn().WriteMessage(websocket.PingMessage, []byte{}); err != nil {
 				return
 			}
 		}
 	}
-}
-
-func (c *Connection) receiveDeadline() (err error) {
-	if err = c.conn.SetReadDeadline(time.Now().Add(writeWait)); err != nil {
-		return
-	}
-	c.conn.SetReadLimit(maxMessageSize)
-	c.conn.SetPongHandler(func(string) error { return c.conn.SetReadDeadline(time.Now().Add(pongWait)) })
-	return
 }
 
 func (c *Connection) firstReceive() (err error) {
@@ -190,9 +206,6 @@ func (c *Connection) firstReceive() (err error) {
 			_ = c.SendMessage("success", "Login Success!")
 		}
 	}()
-	if err = c.receiveDeadline(); err != nil {
-		return
-	}
 	var (
 		msgType int
 		data    []byte
@@ -230,7 +243,7 @@ func (c *Connection) firstReceive() (err error) {
 
 func newConnection(connector Connector, conn *websocket.Conn) (con *Connection, err error) {
 	con = &Connection{
-		ws:        wSocket,
+		ws:        New(),
 		connector: connector,
 		sessionID: 0,
 		conn:      conn,
@@ -244,6 +257,7 @@ func newConnection(connector Connector, conn *websocket.Conn) (con *Connection, 
 		err = ErrUnauthorized
 		return
 	}
+	con.ws.register <- con.connector
 	go con.readPump()
 	go con.writePump()
 	return

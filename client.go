@@ -2,22 +2,29 @@ package wslt
 
 import (
 	"bytes"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-var (
-	wsClient *Client
-)
-
-func NewClient() *Client {
-	if wsClient == nil {
-		wsClient = new(Client)
-		wsClient.reset()
+func NewClient(urlStr string) (ws *Client, err error) {
+	ws = &Client{
+		mu:               sync.Mutex{},
+		conn:             nil,
+		closed:           false,
+		closeChan:        make(chan byte, 1),
+		sent:             make(chan *WsMessage, 256),
+		businessHandlers: make(map[string]ClientBusinessHandler),
 	}
-	return wsClient
+	if err = ws.Dial(urlStr); err != nil {
+		err = fmt.Errorf("Client Dial error:%s\n", err.Error())
+		return
+	}
+	go ws.readPump()
+	go ws.writePump()
+	return
 }
 
 type ClientBusinessHandler func(*ClientContext)
@@ -28,7 +35,7 @@ type (
 		conn *websocket.Conn
 
 		closed    bool
-		CloseChan chan byte
+		closeChan chan byte
 
 		sent chan *WsMessage
 
@@ -36,8 +43,16 @@ type (
 	}
 )
 
-func (c *Client) Reset() {
-	c.reset()
+func (c *Client) Conn() *websocket.Conn {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn
+}
+
+func (c *Client) CloseChan() chan byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closeChan
 }
 
 func (c *Client) ReadHandle(typeStr string, handler ClientBusinessHandler) {
@@ -62,6 +77,7 @@ func (c *Client) SendMessage(typeString string, msgData interface{}) {
 	select {
 	case c.sent <- msg:
 	default:
+		StdLogger.Printf("can't set msg to sent channel")
 		c.close()
 		return
 	}
@@ -70,11 +86,6 @@ func (c *Client) SendMessage(typeString string, msgData interface{}) {
 func (c *Client) Dial(urlStr string) (err error) {
 	c.conn, _, err = websocket.DefaultDialer.Dial(urlStr, nil)
 	return
-}
-
-func (c *Client) Pump() {
-	go c.readPump()
-	go c.writePump()
 }
 
 func (c *Client) IsClosed() bool {
@@ -96,47 +107,36 @@ func (c *Client) runReadHandle(ctx *ClientContext) {
 	c.mu.Unlock()
 }
 
-func (c *Client) receiveDeadline() (err error) {
-	if err = c.conn.SetReadDeadline(time.Now().Add(writeWait)); err != nil {
-		return
-	}
-	c.conn.SetReadLimit(maxMessageSize)
-	c.conn.SetPongHandler(func(string) error { return c.conn.SetReadDeadline(time.Now().Add(pongWait)) })
-	return
-}
-
 func (c *Client) writePump() {
-	ticker := time.NewTicker(pingPeriod)
 	var err error
 	defer func() {
-		c.close()
 		if err != nil {
 			StdLogger.Printf("writePump error:%s\n", err.Error())
+		} else {
+			StdLogger.Printf("wriePump return whith no error")
 		}
+		c.close()
 	}()
 	for {
-		if err = c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+		if err = c.Conn().SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
 			return
 		}
 		select {
+		default:
 		case message, ok := <-c.sent:
 			if !ok {
 				//sent closed
 				if c.IsClosed() {
 					return
 				}
-				err = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				err = c.Conn().WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			if err = c.conn.WriteMessage(message.MessageType, message.Data); err != nil {
+			if err = c.Conn().WriteMessage(message.MessageType, message.Data); err != nil {
 				return
 			}
-		case <-c.CloseChan:
+		case <-c.closeChan:
 			return
-		case <-ticker.C:
-			if err = c.conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
-				return
-			}
 		}
 	}
 }
@@ -144,22 +144,26 @@ func (c *Client) writePump() {
 func (c *Client) readPump() {
 	var err error
 	defer func() {
+		defer func() {
+			if err != nil {
+				StdLogger.Printf("readPump error:%s\n", err.Error())
+			} else {
+				StdLogger.Printf("readPump return whith no error")
+			}
+		}()
 		c.close()
 	}()
 	for {
-		if err = c.receiveDeadline(); err != nil {
-			return
-		}
 		var (
 			messageType int
 			messageData []byte
 			biMessage   *BusinessMessage
 		)
 		select {
-		case <-c.CloseChan:
+		case <-c.closeChan:
 			return
 		default:
-			messageType, messageData, err = c.conn.ReadMessage()
+			messageType, messageData, err = c.Conn().ReadMessage()
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					//log ...
@@ -184,17 +188,6 @@ func (c *Client) readPump() {
 	}
 }
 
-func (c *Client) reset() {
-	*c = Client{
-		mu:               sync.Mutex{},
-		conn:             nil,
-		closed:           false,
-		CloseChan:        make(chan byte, 1),
-		sent:             make(chan *WsMessage, 256),
-		businessHandlers: make(map[string]ClientBusinessHandler),
-	}
-}
-
 func (c *Client) close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -202,6 +195,6 @@ func (c *Client) close() {
 		return
 	}
 	c.closed = true
-	close(c.CloseChan)
+	close(c.closeChan)
 	close(c.sent)
 }

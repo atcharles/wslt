@@ -17,8 +17,9 @@ const (
 )
 
 const (
+	readWait = 5 * time.Second
 	// Time allowed to write a message to the peer.
-	writeWait = 10 * time.Second
+	writeWait = 5 * time.Second
 
 	// Time allowed to read the next pong message from the peer.
 	pongWait = 10 * time.Second
@@ -27,7 +28,7 @@ const (
 	pingPeriod = (pongWait * 9) / 10
 
 	// Maximum message size allowed from peer.
-	maxMessageSize = KB * 20
+	maxMessageSize = KB * 500
 )
 
 var (
