@@ -106,11 +106,11 @@ func (w *WSocket) run() {
 	for {
 		select {
 		case conn := <-w.register:
-			StdLogger.Printf("regeister sid:%d\n", conn.sessionID)
+			StdLogger.Printf("register connectorID:%d;sid:%d\n", conn.connector.GetID(), conn.sessionID)
 			w.connections[conn.sessionID] = conn
 		case conn := <-w.unregister:
 			if _, ok := w.connections[conn.sessionID]; ok {
-				StdLogger.Printf("unregeister sid:%d\n", conn.sessionID)
+				StdLogger.Printf("unregister connectorID:%d;sid:%d\n", conn.connector.GetID(), conn.sessionID)
 				delete(w.connections, conn.sessionID)
 			}
 		case msg := <-w.broadcast:

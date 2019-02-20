@@ -59,7 +59,7 @@ func (s *Session) listen() {
 	for {
 		select {
 		case rs := <-s.removeChan:
-			StdLogger.Printf("remove chan:%#v\n", rs)
+			//StdLogger.Printf("remove chan:%#v\n", rs)
 			s.unusedSids = append(s.unusedSids, rs.sids...)
 			var sids []int64
 			var has bool
@@ -88,7 +88,7 @@ func (s *Session) listen() {
 			}
 			s.connectors[connectorID] = sids
 			s.sidChan <- n
-			StdLogger.Printf("addChan connectorID:%d, chan:%d\n", connectorID, n)
+			//StdLogger.Printf("addChan connectorID:%d, chan:%d\n", connectorID, n)
 		}
 	}
 }

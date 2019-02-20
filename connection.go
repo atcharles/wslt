@@ -101,7 +101,6 @@ func (c *Connection) close() {
 	_ = c.conn.Close()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	StdLogger.Printf("close event!\n")
 	if c.closed {
 		return
 	}
@@ -124,7 +123,7 @@ func (c *Connection) readPump() {
 		if err != nil {
 			StdLogger.Printf("readPump error:%s\n", err.Error())
 		} else {
-			StdLogger.Printf("readPump return whith no error")
+			//StdLogger.Printf("readPump return whith no error")
 		}
 		c.close()
 	}()
@@ -157,8 +156,6 @@ func (c *Connection) readPump() {
 		}
 		messageData = bytes.TrimSpace(bytes.Replace(messageData, []byte{'\n'}, []byte{' '}, -1))
 
-		StdLogger.Printf("get Data:%s\n", messageData)
-
 		if biMessage, err = DecodeBiMessage(messageData); err != nil {
 			return
 		}
@@ -182,7 +179,7 @@ func (c *Connection) writePump() {
 		if err != nil {
 			StdLogger.Printf("writePump error:%s\n", err.Error())
 		} else {
-			StdLogger.Printf("wriePump return whith no error")
+			//StdLogger.Printf("wriePump return whith no error")
 		}
 		c.close()
 	}()
@@ -203,7 +200,7 @@ func (c *Connection) writePump() {
 					message.MessageType, message.Data)
 				continue
 			}
-			StdLogger.Printf("server send %s\n", message.Data)
+
 			if err = c.conn.WriteMessage(websocket.TextMessage, message.Data); err != nil {
 				return
 			}
@@ -217,12 +214,25 @@ func (c *Connection) writePump() {
 	}
 }
 
+func (c *Connection) sendOnce(msgType string, data interface{}) {
+	var (
+		err error
+		msg *WsMessage
+	)
+	msg, err = CreateWsMessage("failed", "Login Failed!")
+	if err != nil {
+		return
+	}
+	if err = c.conn.WriteMessage(msg.MessageType, msg.Data); err != nil {
+		return
+	}
+	_ = c.conn.Close()
+}
+
 func (c *Connection) firstReceive() (err error) {
 	defer func() {
 		if err != nil {
-			StdLogger.Printf("login failed!\n")
-			_ = c.SendMessage("failed", "Login Failed!")
-			c.close()
+			c.sendOnce("failed", "Login Failed!")
 		} else {
 			_ = c.SendMessage("success", "Login Success!")
 		}

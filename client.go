@@ -136,8 +136,6 @@ func (c *Client) writePump() {
 				continue
 			}
 
-			StdLogger.Printf("WriteMessage message: %s\n", message.Data)
-
 			if err = c.conn.WriteMessage(websocket.TextMessage, message.Data); err != nil {
 				return
 			}
@@ -170,7 +168,6 @@ func (c *Client) readPump() {
 				websocket.CloseAbnormalClosure) {
 				//log ...
 			}
-			StdLogger.Printf("Read error:%s\n", err.Error())
 			return
 		}
 		if messageType != websocket.TextMessage {
@@ -179,8 +176,6 @@ func (c *Client) readPump() {
 			continue
 		}
 		messageData = bytes.TrimSpace(bytes.Replace(messageData, []byte{'\n'}, []byte{' '}, -1))
-
-		StdLogger.Printf("Read Message:%s\n", messageData)
 
 		if biMessage, err = DecodeBiMessage(messageData); err != nil {
 			return
@@ -195,8 +190,6 @@ func (c *Client) readPump() {
 			return
 		default:
 		}
-
-		//StdLogger.Printf("Read Message:%s\n", messageData)
 	}
 }
 
