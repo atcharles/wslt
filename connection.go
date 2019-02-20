@@ -2,6 +2,7 @@ package wslt
 
 import (
 	"bytes"
+	"errors"
 	"sync"
 	"time"
 
@@ -28,19 +29,22 @@ type (
 	}
 )
 
+func (c *Connection) Ws() *WSocket {
+	return c.ws
+}
+
 func (c *Connection) SessionID() int64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	return c.sessionID
 }
 
 func (c *Connection) Connector() Connector {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	return c.connector
 }
 
 func (c *Connection) SendMessage(businessType string, businessMessage interface{}) (err error) {
+	if businessMessage == nil {
+		return errors.New("nil pointer")
+	}
 	var msg *BusinessMessage
 	if msg, err = NewBusinessMessage(businessType, businessMessage); err != nil {
 		return
@@ -61,6 +65,8 @@ func (c *Connection) sendBusinessMessage(msg *BusinessMessage) (err error) {
 	wMsg := NewWsMessage(websocket.TextMessage, wsMsgData)
 	select {
 	case c.sent <- wMsg:
+	case <-c.closeChan:
+		return
 	default:
 		//缓冲区写满
 		StdLogger.Printf("can't set msg to sent channel")
@@ -82,42 +88,44 @@ func (c *Connection) GetConn() *websocket.Conn {
 }
 
 func (c *Connection) add() {
-	c.mu.Lock()
-	sid := globalSession.GetSid()
-	c.sessionID = sid
-	wSocket.addConnections(sid, c)
-	globalSession.SetConnectors(c.connector.GetID(), sid)
-	c.mu.Unlock()
+	//c.mu.Lock()
+	//defer c.mu.Unlock()
+	globalSession.addChan <- c.connector.GetID()
+	c.sessionID = <-globalSession.sidChan
+	wSocket.register <- c
+	go c.readPump()
+	go c.writePump()
 }
 
 func (c *Connection) close() {
+	_ = c.conn.Close()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	StdLogger.Printf("close event!\n")
 	if c.closed {
 		return
 	}
-	_ = c.conn.Close()
-	close(c.sent)
 	c.closed = true
+	close(c.sent)
 	close(c.closeChan)
 	if c.sessionID == 0 {
 		return
 	}
-	wSocket.removeConnection(c.sessionID)
-	//remove connector's sid
-	globalSession.OnWsClose(c.connector.GetID(), c.sessionID)
+	wSocket.unregister <- c
+	globalSession.removeChan <- &SessionRelationShip{
+		connectorID: c.connector.GetID(),
+		sids:        []int64{c.sessionID},
+	}
 }
 
 func (c *Connection) readPump() {
 	var err error
 	defer func() {
-		defer func() {
-			if err != nil {
-				StdLogger.Printf("readPump error:%s\n", err.Error())
-			} else {
-				StdLogger.Printf("readPump return whith no error")
-			}
-		}()
+		if err != nil {
+			StdLogger.Printf("readPump error:%s\n", err.Error())
+		} else {
+			StdLogger.Printf("readPump return whith no error")
+		}
 		c.close()
 	}()
 	//************IMPORT****************
@@ -125,39 +133,44 @@ func (c *Connection) readPump() {
 	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error { _ = c.conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
 	for {
+
 		var (
 			messageType int
 			messageData []byte
 			biMessage   *BusinessMessage
 		)
+		if c.IsClosed() {
+			return
+		}
+		messageType, messageData, err = c.conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				//log ...
+			}
+			StdLogger.Printf("ws server ReadMessage error:%s\n", err.Error())
+			return
+		}
+		if messageType != websocket.TextMessage {
+			StdLogger.Printf("read message type is:%d,data is:%s\n",
+				messageType, messageData)
+			continue
+		}
+		messageData = bytes.TrimSpace(bytes.Replace(messageData, []byte{'\n'}, []byte{' '}, -1))
+
+		StdLogger.Printf("get Data:%s\n", messageData)
+
+		if biMessage, err = DecodeBiMessage(messageData); err != nil {
+			return
+		}
+		ctx := &Context{
+			Connection: c,
+			Message:    biMessage,
+		}
+		c.ws.runReadHandle(ctx)
 		select {
 		case <-c.closeChan:
 			return
 		default:
-			if c.IsClosed() {
-				return
-			}
-			messageType, messageData, err = c.GetConn().ReadMessage()
-			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					//log ...
-					err = nil
-					StdLogger.Printf("readPump error:%s\n", err.Error())
-				}
-				return
-			}
-			if messageType != websocket.TextMessage {
-				continue
-			}
-			messageData = bytes.TrimSpace(bytes.Replace(messageData, []byte{'\n'}, []byte{' '}, -1))
-			if biMessage, err = DecodeBiMessage(messageData); err != nil {
-				return
-			}
-			ctx := &Context{
-				Connection: c,
-				Message:    biMessage,
-			}
-			c.ws.runReadHandle(ctx)
 		}
 	}
 }
@@ -174,24 +187,30 @@ func (c *Connection) writePump() {
 		c.close()
 	}()
 	for {
-		_ = c.GetConn().SetWriteDeadline(time.Now().Add(writeWait))
+		//sent closed
+		if c.IsClosed() {
+			return
+		}
+		_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 		select {
 		case message, ok := <-c.sent:
 			if !ok {
-				//sent closed
-				if c.IsClosed() {
-					return
-				}
-				err = c.GetConn().WriteMessage(websocket.CloseMessage, []byte{})
+				//err = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			if err = c.GetConn().WriteMessage(message.MessageType, message.Data); err != nil {
+			if message.MessageType != websocket.TextMessage {
+				StdLogger.Printf("wirte message type is:%d, data is:%s\n",
+					message.MessageType, message.Data)
+				continue
+			}
+			StdLogger.Printf("server send %s\n", message.Data)
+			if err = c.conn.WriteMessage(websocket.TextMessage, message.Data); err != nil {
 				return
 			}
 		case <-c.closeChan:
 			return
 		case <-ticker.C:
-			if err = c.GetConn().WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+			if err = c.conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
 				return
 			}
 		}
@@ -201,11 +220,14 @@ func (c *Connection) writePump() {
 func (c *Connection) firstReceive() (err error) {
 	defer func() {
 		if err != nil {
+			StdLogger.Printf("login failed!\n")
+			_ = c.SendMessage("failed", "Login Failed!")
 			c.close()
 		} else {
 			_ = c.SendMessage("success", "Login Success!")
 		}
 	}()
+	c.connector = c.connector.NewInstance()
 	var (
 		msgType int
 		data    []byte
@@ -233,11 +255,11 @@ func (c *Connection) firstReceive() (err error) {
 	if len(secret) == 0 {
 		return ErrUnauthorized
 	}
-	c.connector = c.connector.NewInstance()
-	c.connector.SetConnection(c)
 	if err = c.connector.CheckAuth(secret, c.conn); err != nil {
 		return
 	}
+	c.add()
+	c.connector.SetConnection(c)
 	return
 }
 
@@ -255,10 +277,6 @@ func newConnection(connector Connector, conn *websocket.Conn) (con *Connection, 
 	//receive first,check auth
 	if err = con.firstReceive(); err != nil {
 		err = ErrUnauthorized
-		return
 	}
-	con.ws.register <- con.connector
-	go con.readPump()
-	go con.writePump()
 	return
 }

@@ -13,14 +13,14 @@ type BusinessHandler func(*Context)
 
 type (
 	WsMessage struct {
-		MessageType int `json:"type"`
+		MessageType int
 
-		Data []byte `json:"data"`
+		Data []byte
 	}
 	BusinessMessage struct {
-		StringType string `json:"type"`
+		StringType string
 
-		Data jsoniter.RawMessage `json:"data"`
+		Data jsoniter.RawMessage
 	}
 )
 

@@ -37,46 +37,26 @@ func (w *WSocket) Handler(connector Connector) http.HandlerFunc {
 
 //WSocket ...
 type (
-	IterationConnectionsFunc func(id int64, connector Connector)
+	IterationConnectionsFunc func(id int64, connection *Connection) bool
 
 	WSocket struct {
-		mu sync.Mutex
+		mu *sync.Mutex
 
 		session *Session
-
-		connections map[int64]Connector
-
-		register chan Connector
-
-		unregister chan Connector
-
+		//sid=>connector
+		connections map[int64]*Connection
+		//add sid
+		register chan *Connection
+		//remove sid
+		unregister chan *Connection
+		//send broadcast to all connection
 		broadcast chan *BusinessMessage
-
+		//handle read data
 		businessHandlers map[string]BusinessHandler
+
+		iterationChan chan IterationConnectionsFunc
 	}
 )
-
-func (w *WSocket) addConnections(sid int64, conn *Connection) {
-	w.mu.Lock()
-	if _, ok := w.connections[sid]; !ok {
-		w.connections[sid] = conn.connector
-	}
-	w.mu.Unlock()
-}
-
-func (w *WSocket) removeConnection(sid int64) {
-	w.mu.Lock()
-	if _, ok := w.connections[sid]; !ok {
-		delete(w.connections, sid)
-	}
-	w.mu.Unlock()
-}
-
-func (w *WSocket) Session() *Session {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.session
-}
 
 func (w *WSocket) runReadHandle(ctx *Context) {
 	defer func() {
@@ -84,46 +64,32 @@ func (w *WSocket) runReadHandle(ctx *Context) {
 			StdLogger.Printf("run handler error:%v\n", p)
 		}
 	}()
-	w.mu.Lock()
 	if handler, has := w.businessHandlers[ctx.Message.StringType]; has {
 		go handler(ctx)
 	}
-	w.mu.Unlock()
 }
 
 func (w *WSocket) ReadHandle(msgType string, handler BusinessHandler) {
-	w.mu.Lock()
 	if _, has := w.businessHandlers[msgType]; has {
 		panic(fmt.Sprintf("BusinessHandler type:%s exists", msgType))
 	}
 	w.businessHandlers[msgType] = handler
-	w.mu.Unlock()
-}
-
-func (w *WSocket) Len() (n int) {
-	w.mu.Lock()
-	n = len(w.connections)
-	w.mu.Unlock()
-	return
 }
 
 func (w *WSocket) IterationConnections(fn IterationConnectionsFunc) {
-	w.mu.Lock()
-	for key, value := range w.connections {
-		fn(key, value)
-	}
-	w.mu.Unlock()
+	w.iterationChan <- fn
 }
 
 func newWSocket() *WSocket {
 	ws := &WSocket{
-		mu:               sync.Mutex{},
+		mu:               &sync.Mutex{},
 		session:          GlobalSession(),
-		connections:      make(map[int64]Connector),
-		register:         make(chan Connector, 1),
-		unregister:       make(chan Connector, 1),
+		connections:      make(map[int64]*Connection),
+		register:         make(chan *Connection, 1),
+		unregister:       make(chan *Connection, 1),
 		broadcast:        make(chan *BusinessMessage, 256),
 		businessHandlers: make(map[string]BusinessHandler),
+		iterationChan:    make(chan IterationConnectionsFunc, 1),
 	}
 	go ws.run()
 	return ws
@@ -139,15 +105,25 @@ func New() *WSocket {
 func (w *WSocket) run() {
 	for {
 		select {
-		case cn := <-w.register:
-			cn.Connection().add()
-		case cn := <-w.unregister:
-			cn.Connection().close()
+		case conn := <-w.register:
+			StdLogger.Printf("regeister sid:%d\n", conn.sessionID)
+			w.connections[conn.sessionID] = conn
+		case conn := <-w.unregister:
+			if _, ok := w.connections[conn.sessionID]; ok {
+				StdLogger.Printf("unregeister sid:%d\n", conn.sessionID)
+				delete(w.connections, conn.sessionID)
+			}
 		case msg := <-w.broadcast:
-			for _, cn := range w.connections {
-				err := cn.Connection().sendBusinessMessage(msg)
+			for _, conn := range w.connections {
+				err := conn.sendBusinessMessage(msg)
 				if err != nil {
 					StdLogger.Printf("broadcast send message error:%s\n", err.Error())
+				}
+			}
+		case fn := <-w.iterationChan:
+			for key, value := range w.connections {
+				if !fn(key, value) {
+					break
 				}
 			}
 		}

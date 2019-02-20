@@ -17,12 +17,11 @@ const (
 )
 
 const (
-	readWait = 5 * time.Second
 	// Time allowed to write a message to the peer.
-	writeWait = 5 * time.Second
+	writeWait = 20 * time.Second
 
 	// Time allowed to read the next pong message from the peer.
-	pongWait = 10 * time.Second
+	pongWait = 20 * time.Second
 
 	// Send pings to peer with this period. Must be less than pongWait.
 	pingPeriod = (pongWait * 9) / 10
@@ -34,8 +33,8 @@ const (
 var (
 	upgradeOption = websocket.Upgrader{
 		HandshakeTimeout: time.Second * 3,
-		ReadBufferSize:   1024,
-		WriteBufferSize:  1024,
+		ReadBufferSize:   1024 * int(KB),
+		WriteBufferSize:  1024 * int(KB),
 		Error: func(w http.ResponseWriter, r *http.Request, status int, reason error) {
 			webCtx := &WebContext{r: r, w: w}
 			webCtx.JSON(status, reason.Error())
