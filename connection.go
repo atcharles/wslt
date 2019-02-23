@@ -3,6 +3,7 @@ package wslt
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -42,19 +43,21 @@ func (c *Connection) Connector() Connector {
 }
 
 func (c *Connection) SendMessage(businessType string, businessMessage interface{}) (err error) {
-	if businessMessage == nil {
-		return errors.New("nil pointer")
-	}
 	var msg *BusinessMessage
 	if msg, err = NewBusinessMessage(businessType, businessMessage); err != nil {
+		err = fmt.Errorf("创建业务数据失败: %s\n", err.Error())
 		return
 	}
-	return c.sendBusinessMessage(msg)
+	err = c.sendBusinessMessage(msg)
+	if err != nil {
+		err = fmt.Errorf("发送数据失败: %s\n", err.Error())
+	}
+	return
 }
 
 func (c *Connection) sendBusinessMessage(msg *BusinessMessage) (err error) {
 	if c.IsClosed() {
-		return
+		return errors.New("链接已关闭")
 	}
 	var (
 		wsMsgData []byte
@@ -66,30 +69,30 @@ func (c *Connection) sendBusinessMessage(msg *BusinessMessage) (err error) {
 	select {
 	case c.sent <- wMsg:
 	case <-c.closeChan:
+		err = errors.New("链接已关闭")
 		return
 	default:
 		//缓冲区写满
-		StdLogger.Printf("can't set msg to sent channel")
-		c.close()
+		err = errors.New("can't set msg to sent channel")
 	}
 	return
 }
 
-func (c *Connection) IsClosed() bool {
+func (c *Connection) IsClosed() (closed bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.closed
+	closed = c.closed
+	c.mu.Unlock()
+	return
 }
 
-func (c *Connection) GetConn() *websocket.Conn {
+func (c *Connection) GetConn() (conn *websocket.Conn) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.conn
+	conn = c.conn
+	c.mu.Unlock()
+	return
 }
 
 func (c *Connection) add() {
-	//c.mu.Lock()
-	//defer c.mu.Unlock()
 	globalSession.addChan <- c.connector.GetID()
 	c.sessionID = <-globalSession.sidChan
 	wSocket.register <- c
@@ -119,99 +122,82 @@ func (c *Connection) close() {
 
 func (c *Connection) readPump() {
 	var err error
-	defer func() {
-		if err != nil {
-			StdLogger.Printf("readPump error:%s\n", err.Error())
-		} else {
-			//StdLogger.Printf("readPump return whith no error")
-		}
-		c.close()
-	}()
 	//************IMPORT****************
 	c.conn.SetReadLimit(maxMessageSize)
 	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error { _ = c.conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
 	for {
-
 		var (
 			messageType int
 			messageData []byte
 			biMessage   *BusinessMessage
 		)
-		if c.IsClosed() {
-			return
-		}
 		messageType, messageData, err = c.conn.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				//log ...
+			if websocket.IsUnexpectedCloseError(err,
+				websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNoStatusReceived) {
+				StdLogger.Printf("ws server ReadMessage error:%s\n", err.Error())
 			}
-			StdLogger.Printf("ws server ReadMessage error:%s\n", err.Error())
-			return
+			goto Close
 		}
 		if messageType != websocket.TextMessage {
-			StdLogger.Printf("read message type is:%d,data is:%s\n",
-				messageType, messageData)
 			continue
 		}
 		messageData = bytes.TrimSpace(bytes.Replace(messageData, []byte{'\n'}, []byte{' '}, -1))
-
 		if biMessage, err = DecodeBiMessage(messageData); err != nil {
-			return
+			StdLogger.Printf("读取到格式不正确的数据:%s\n", messageData)
+			continue
 		}
 		ctx := &Context{
 			Connection: c,
 			Message:    biMessage,
 		}
 		c.ws.runReadHandle(ctx)
+
 		select {
 		case <-c.closeChan:
 			return
 		default:
 		}
 	}
+
+Close:
+	c.close()
 }
 
 func (c *Connection) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	var err error
 	defer func() {
-		if err != nil {
-			StdLogger.Printf("writePump error:%s\n", err.Error())
-		} else {
-			//StdLogger.Printf("wriePump return whith no error")
-		}
-		c.close()
+		ticker.Stop()
 	}()
 	for {
-		//sent closed
-		if c.IsClosed() {
-			return
-		}
 		_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 		select {
 		case message, ok := <-c.sent:
 			if !ok {
-				//err = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
+				err = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				goto Close
 			}
+
 			if message.MessageType != websocket.TextMessage {
-				StdLogger.Printf("wirte message type is:%d, data is:%s\n",
-					message.MessageType, message.Data)
 				continue
 			}
 
 			if err = c.conn.WriteMessage(websocket.TextMessage, message.Data); err != nil {
-				return
+				goto Close
 			}
 		case <-c.closeChan:
 			return
 		case <-ticker.C:
 			if err = c.conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
-				return
+				goto Close
 			}
 		}
 	}
+
+Close:
+	c.close()
 }
 
 func (c *Connection) sendOnce(msgType string, data interface{}) {
@@ -219,7 +205,7 @@ func (c *Connection) sendOnce(msgType string, data interface{}) {
 		err error
 		msg *WsMessage
 	)
-	msg, err = CreateWsMessage("failed", "Login Failed!")
+	msg, err = CreateWsMessage("failed", data)
 	if err != nil {
 		return
 	}
@@ -232,7 +218,7 @@ func (c *Connection) sendOnce(msgType string, data interface{}) {
 func (c *Connection) firstReceive() (err error) {
 	defer func() {
 		if err != nil {
-			c.sendOnce("failed", "Login Failed!")
+			c.sendOnce("failed", fmt.Sprintf("Login Failed: %s", err.Error()))
 		} else {
 			_ = c.SendMessage("success", "Login Success!")
 		}

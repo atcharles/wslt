@@ -44,10 +44,19 @@ type (
 	}
 )
 
-func (c *Client) CloseChan() chan byte {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *Client) CloseChan() <-chan byte {
 	return c.closeChan
+}
+
+func (c *Client) Close() {
+	c.close()
+}
+
+func (c *Client) IsClosed() (closed bool) {
+	c.mu.Lock()
+	closed = c.closed
+	c.mu.Unlock()
+	return
 }
 
 func (c *Client) ReadHandle(typeStr string, handler ClientBusinessHandler) {
@@ -57,36 +66,36 @@ func (c *Client) ReadHandle(typeStr string, handler ClientBusinessHandler) {
 }
 
 //msgData is a BusinessMessage's RawData
-func (c *Client) SendMessage(typeString string, msgData interface{}) {
-	if c.IsClosed() {
-		return
-	}
-	var (
-		err error
-		msg *WsMessage
-	)
+func (c *Client) SendMessage(typeString string, msgData interface{}) (err error) {
+	var msg *WsMessage
 	defer func() {
 		if err != nil {
-			StdLogger.Printf("send message error:%s\n", err.Error())
+			StdLogger.Printf("发送数据失败:%s\n", err.Error())
 		}
 	}()
+	defer func() {}()
+	if c.IsClosed() {
+		err = errors.New("client is closed")
+		return
+	}
 	if msgData == nil {
-		err = errors.New("nil pointer")
+		err = errors.New("数据格式错误,nil pointer")
 		return
 	}
 	msg, err = CreateWsMessage(typeString, msgData)
 	if err != nil {
+		err = errors.New("数据格式错误")
 		return
 	}
 	select {
 	case c.sent <- msg:
 	case <-c.closeChan:
+		err = errors.New("the sent channel is closed")
 		return
 	default:
-		StdLogger.Printf("can't set msg to sent channel")
-		c.close()
-		return
+		err = errors.New("the sent channel is full")
 	}
+	return
 }
 
 func (c *Client) Dial(urlStr string) (err error) {
@@ -94,67 +103,59 @@ func (c *Client) Dial(urlStr string) (err error) {
 	return
 }
 
-func (c *Client) IsClosed() bool {
+func (c *Client) runReadHandle(ctx *ClientContext) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.closed
+	if handler, has := c.businessHandlers[ctx.Message.StringType]; has {
+		handler.run(ctx)
+	}
+	c.mu.Unlock()
 }
 
-func (c *Client) runReadHandle(ctx *ClientContext) {
+func (h ClientBusinessHandler) run(ctx *ClientContext) {
 	defer func() {
 		if p := recover(); p != nil {
-			StdLogger.Printf("run handler error:%v\n", p)
+			StdLogger.Printf("run handler error:\nFunc:[%s]:\n%v\n", objectName(h), p)
 		}
 	}()
-	if handler, has := c.businessHandlers[ctx.Message.StringType]; has {
-		go handler(ctx)
-	}
+	go h(ctx)
 }
 
 func (c *Client) writePump() {
 	var err error
-	defer func() {
-		if err != nil {
-			StdLogger.Printf("writePump error:%s\n", err.Error())
-		} else {
-			StdLogger.Printf("wriePump return whith no error")
-		}
-		c.close()
-	}()
 	for {
 		if err = c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
-			return
+			goto CLOSE
 		}
 		select {
 		case message, ok := <-c.sent:
 			if !ok {
+				//sent channel is closed
 				return
 			}
 			if message.MessageType != websocket.TextMessage {
-				StdLogger.Printf("wirte message type is:%d, data is:%s\n",
-					message.MessageType, message.Data)
 				continue
 			}
-
 			if err = c.conn.WriteMessage(websocket.TextMessage, message.Data); err != nil {
-				return
+				if websocket.IsUnexpectedCloseError(err,
+					websocket.CloseGoingAway,
+					websocket.CloseNoStatusReceived,
+					websocket.CloseAbnormalClosure) {
+					StdLogger.Printf("wirtePump error:%s\n", err.Error())
+				}
+				goto CLOSE
 			}
 		case <-c.closeChan:
 			return
+		default:
 		}
 	}
+
+CLOSE:
+	c.close()
 }
 
 func (c *Client) readPump() {
 	var err error
-	defer func() {
-		if err != nil {
-			StdLogger.Printf("readPump error:%s\n", err.Error())
-		} else {
-			StdLogger.Printf("readPump return whith no error")
-		}
-		c.close()
-	}()
 	for {
 		var (
 			messageType int
@@ -165,35 +166,41 @@ func (c *Client) readPump() {
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err,
 				websocket.CloseGoingAway,
+				websocket.CloseNoStatusReceived,
 				websocket.CloseAbnormalClosure) {
-				//log ...
+				StdLogger.Printf("readPump error:%s\n", err.Error())
 			}
-			return
+			goto CLOSE
 		}
 		if messageType != websocket.TextMessage {
-			StdLogger.Printf("read message type is:%d,data is:%s\n",
-				messageType, messageData)
 			continue
 		}
 		messageData = bytes.TrimSpace(bytes.Replace(messageData, []byte{'\n'}, []byte{' '}, -1))
 
 		if biMessage, err = DecodeBiMessage(messageData); err != nil {
-			return
+			//读取到格式不正确的数据
+			StdLogger.Printf("读取到格式不正确的数据:%s\n", messageData)
+			continue
 		}
 		ctx := &ClientContext{
 			Client:  c,
 			Message: biMessage,
 		}
 		c.runReadHandle(ctx)
+
 		select {
 		case <-c.closeChan:
 			return
 		default:
 		}
 	}
+
+CLOSE:
+	c.close()
 }
 
 func (c *Client) close() {
+	_ = c.conn.Close()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {

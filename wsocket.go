@@ -12,7 +12,7 @@ import (
 
 var (
 	wSocket   *WSocket
-	StdLogger = log.New(os.Stdout, "[WS]", log.LstdFlags)
+	StdLogger = log.New(os.Stdout, "[WSlt] ", log.LstdFlags)
 )
 
 func (w *WSocket) Handler(connector Connector) http.HandlerFunc {
