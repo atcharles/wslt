@@ -30,6 +30,10 @@ type (
 	}
 )
 
+func (c *Connection) Close() {
+	c.close()
+}
+
 func (c *Connection) Ws() *WSocket {
 	return c.ws
 }
@@ -134,9 +138,8 @@ func (c *Connection) readPump() {
 		)
 		messageType, messageData, err = c.conn.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err,
-				websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNoStatusReceived) {
-				StdLogger.Printf("ws server ReadMessage error:%s\n", err.Error())
+			if websocket.IsUnexpectedCloseError(err, 1001, 1005, 1006) {
+				StdLogger.Printf("Server readPump error:%s\n", err.Error())
 			}
 			goto Close
 		}

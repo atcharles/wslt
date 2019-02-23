@@ -136,10 +136,7 @@ func (c *Client) writePump() {
 				continue
 			}
 			if err = c.conn.WriteMessage(websocket.TextMessage, message.Data); err != nil {
-				if websocket.IsUnexpectedCloseError(err,
-					websocket.CloseGoingAway,
-					websocket.CloseNoStatusReceived,
-					websocket.CloseAbnormalClosure) {
+				if websocket.IsUnexpectedCloseError(err, 1001, 1005, 1006) {
 					StdLogger.Printf("wirtePump error:%s\n", err.Error())
 				}
 				goto CLOSE
@@ -164,10 +161,7 @@ func (c *Client) readPump() {
 		)
 		messageType, messageData, err = c.conn.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err,
-				websocket.CloseGoingAway,
-				websocket.CloseNoStatusReceived,
-				websocket.CloseAbnormalClosure) {
+			if websocket.IsUnexpectedCloseError(err, 1001, 1005, 1006) {
 				StdLogger.Printf("readPump error:%s\n", err.Error())
 			}
 			goto CLOSE
