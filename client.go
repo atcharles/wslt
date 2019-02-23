@@ -143,7 +143,6 @@ func (c *Client) writePump() {
 			}
 		case <-c.closeChan:
 			return
-		default:
 		}
 	}
 
