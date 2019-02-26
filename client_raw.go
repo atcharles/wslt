@@ -104,13 +104,12 @@ func (c *RawClient) Dial(urlStr string) (err error) {
 func (c *RawClient) writePump() {
 	var err error
 	for {
-		if err = c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
-			goto CLOSE
-		}
 		select {
 		case message, ok := <-c.sent:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				//sent channel is closed
+				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 			if message.MessageType != websocket.TextMessage {

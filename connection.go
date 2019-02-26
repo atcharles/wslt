@@ -175,9 +175,9 @@ func (c *Connection) writePump() {
 		ticker.Stop()
 	}()
 	for {
-		_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 		select {
 		case message, ok := <-c.sent:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				err = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				goto Close
@@ -193,6 +193,7 @@ func (c *Connection) writePump() {
 		case <-c.closeChan:
 			return
 		case <-ticker.C:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err = c.conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
 				goto Close
 			}

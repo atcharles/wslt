@@ -5,10 +5,6 @@ import (
 	jsoniter "github.com/json-iterator/go"
 )
 
-var (
-	json = jsoniter.ConfigFastest
-)
-
 type BusinessHandler func(*Context)
 
 type (

@@ -73,7 +73,6 @@ func (c *Client) SendMessage(typeString string, msgData interface{}) (err error)
 			StdLogger.Printf("发送数据失败:%s\n", err.Error())
 		}
 	}()
-	defer func() {}()
 	if c.IsClosed() {
 		err = errors.New("client is closed")
 		return
@@ -122,14 +121,18 @@ func (h ClientBusinessHandler) run(ctx *ClientContext) {
 
 func (c *Client) writePump() {
 	var err error
-	for {
-		if err = c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
-			goto CLOSE
+	defer func() {
+		if err != nil {
+			StdLogger.Printf("发送数据失败:%s\n", err.Error())
 		}
+	}()
+	for {
 		select {
 		case message, ok := <-c.sent:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				//sent channel is closed
+				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 			if message.MessageType != websocket.TextMessage {
@@ -152,6 +155,11 @@ CLOSE:
 
 func (c *Client) readPump() {
 	var err error
+	defer func() {
+		if err != nil {
+			StdLogger.Printf("读取数据失败:%s\n", err.Error())
+		}
+	}()
 	for {
 		var (
 			messageType int

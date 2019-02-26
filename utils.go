@@ -3,7 +3,21 @@ package wslt
 import (
 	"reflect"
 	"runtime"
+
+	jsoniter "github.com/json-iterator/go"
+	"github.com/json-iterator/go/extra"
 )
+
+var (
+	json jsoniter.API
+)
+
+func init() {
+	extra.RegisterFuzzyDecoders()
+	//extra.SetNamingStrategy(extra.LowerCaseWithUnderscores)
+	//extra.SupportPrivateFields()
+	json = jsoniter.ConfigFastest
+}
 
 func removeSliceInt64(rs *[]int64, val int64) {
 	var r int
