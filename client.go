@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/atcharles/wslt/ws_rpc"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -18,6 +20,7 @@ func NewClient(urlStr string) (ws *Client, err error) {
 		closeChan:        make(chan byte, 1),
 		sent:             make(chan *WsMessage, 256),
 		businessHandlers: make(map[string]ClientBusinessHandler),
+		rpcMessages:      make(map[string]ws_rpc.CallHandler),
 	}
 	if err = ws.Dial(urlStr); err != nil {
 		err = fmt.Errorf("Client Dial error:%s\n", err.Error())
@@ -41,8 +44,29 @@ type (
 		sent chan *WsMessage
 
 		businessHandlers map[string]ClientBusinessHandler
+
+		rpcMessages map[string]ws_rpc.CallHandler
 	}
 )
+
+func (c *Client) AddCallHandler(rid string, handler ws_rpc.CallHandler) {
+	c.mu.Lock()
+	c.rpcMessages[rid] = handler
+	c.mu.Unlock()
+}
+
+func (c *Client) RemoveHandler(rid string) {
+	c.mu.Lock()
+	delete(c.rpcMessages, rid)
+	c.mu.Unlock()
+}
+
+func (c *Client) GetHandler(rid string) (handler ws_rpc.CallHandler, ok bool) {
+	c.mu.Lock()
+	handler, ok = c.rpcMessages[rid]
+	c.mu.Unlock()
+	return
+}
 
 func (c *Client) CloseChan() <-chan byte {
 	return c.closeChan
@@ -183,11 +207,24 @@ func (c *Client) readPump() {
 			StdLogger.Printf("读取到格式不正确的数据:%s\n", messageData)
 			continue
 		}
-		ctx := &ClientContext{
-			Client:  c,
-			Message: biMessage,
+
+		wsMsg := ws_rpc.NewMessage(biMessage.Data, c)
+		e := wsMsg.UnmarshalCallMsg()
+		if e != nil {
+			//不是一个call msg
+			ctx := &ClientContext{
+				Client:  c,
+				Message: biMessage,
+			}
+			c.runReadHandle(ctx)
+		} else {
+			handler, ok := c.GetHandler(wsMsg.Msg().RequestID)
+			if !ok {
+				continue
+			}
+			handler.SetMsg(wsMsg.Msg())
+			handler.HasRead()
 		}
-		c.runReadHandle(ctx)
 
 		select {
 		case <-c.closeChan:

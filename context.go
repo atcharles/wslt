@@ -1,9 +1,12 @@
 package wslt
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/atcharles/wslt/ws_rpc"
 )
 
 type (
@@ -25,6 +28,22 @@ type (
 		err      error
 	}
 )
+
+func (ctx *Context) BindCallRequest() (msg *ws_rpc.CallMsg, err error) {
+	callMsg, ok := ws_rpc.ValidCallMsg(ctx.Message.Data)
+	if !ok {
+		err = errors.New("rpc call:数据错误")
+		return
+	}
+	msg = callMsg
+	return
+}
+
+//SendCallBackMsg Sending synchronous messages
+func (ctx *Context) SendCallBackMsg(callMsg *ws_rpc.CallMsg, data interface{}) {
+	callMsg.Result, _ = json.Marshal(data)
+	_ = ctx.SendMessage(ctx.Message.StringType, callMsg)
+}
 
 func (c *WebContext) IsWebSocket() bool {
 	if strings.Contains(strings.ToLower(c.r.Header.Get("Connection")), "upgrade") &&
