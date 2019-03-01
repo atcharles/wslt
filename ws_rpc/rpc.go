@@ -88,6 +88,7 @@ func (m *message) Call(tp string, args Map) (result []byte, err error) {
 		result = m.msg.Result
 	case <-tm.C:
 		err = fmt.Errorf("requestID:%s,args:%#v error:timeout\n", callMsg.RequestID, callMsg.Args)
+		m.done()
 	}
 	tm.Stop()
 
