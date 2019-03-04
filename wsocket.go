@@ -50,7 +50,7 @@ type (
 		//remove sid
 		unregister chan *Connection
 		//send broadcast to all connection
-		broadcast chan *BusinessMessage
+		broadcast chan *WsMessage
 		//handle read data
 		businessHandlers map[string]BusinessHandler
 
@@ -87,7 +87,7 @@ func newWSocket() *WSocket {
 		connections:      make(map[int64]*Connection),
 		register:         make(chan *Connection, 1),
 		unregister:       make(chan *Connection, 1),
-		broadcast:        make(chan *BusinessMessage, 256),
+		broadcast:        make(chan *WsMessage, 256),
 		businessHandlers: make(map[string]BusinessHandler),
 		iterationChan:    make(chan IterationConnectionsFunc, 1),
 	}
@@ -115,9 +115,10 @@ func (w *WSocket) run() {
 			}
 		case msg := <-w.broadcast:
 			for _, conn := range w.connections {
-				err := conn.sendBusinessMessage(msg)
-				if err != nil {
-					StdLogger.Printf("broadcast send message error:%s\n", err.Error())
+				select {
+				case conn.sent <- msg:
+				case <-conn.closeChan:
+					continue
 				}
 			}
 		case fn := <-w.iterationChan:
@@ -131,8 +132,8 @@ func (w *WSocket) run() {
 }
 
 func (w *WSocket) SendToAll(msgType string, data interface{}) (err error) {
-	var msg *BusinessMessage
-	if msg, err = NewBusinessMessage(msgType, data); err != nil {
+	var msg *WsMessage
+	if msg, err = CreateWsMessage(msgType, data); err != nil {
 		return
 	}
 	w.broadcast <- msg

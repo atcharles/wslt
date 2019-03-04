@@ -24,7 +24,7 @@ type (
 		sent chan *WsMessage
 
 		closed    bool
-		closeChan chan byte
+		closeChan chan struct{}
 
 		mu sync.Mutex
 	}
@@ -271,7 +271,7 @@ func newConnection(connector Connector, conn *websocket.Conn) (con *Connection, 
 		conn:      conn,
 		sent:      make(chan *WsMessage, 256),
 		closed:    false,
-		closeChan: make(chan byte, 1),
+		closeChan: make(chan struct{}, 1),
 		mu:        sync.Mutex{},
 	}
 	//receive first,check auth
