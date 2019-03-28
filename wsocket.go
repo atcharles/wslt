@@ -3,8 +3,10 @@ package wslt
 import (
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -31,8 +33,26 @@ func (w *WSocket) Handler(connector Connector) http.HandlerFunc {
 		if _, err = newConnection(connector, conn); err != nil {
 			return
 		}
+		StdLogger.Printf("接受连接:%s\n", httpRequestAddr(r))
 		return
 	}
+}
+
+func httpRequestAddr(r *http.Request) string {
+	clientIP := r.Header.Get("X-Forwarded-For")
+	clientIP = strings.TrimSpace(strings.Split(clientIP, ",")[0])
+	if clientIP == "" {
+		clientIP = strings.TrimSpace(r.Header.Get("X-Real-Ip"))
+	}
+	if clientIP != "" {
+		return clientIP
+	}
+
+	if ip, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr)); err == nil {
+		return ip
+	}
+
+	return ""
 }
 
 //WSocket ...
@@ -106,11 +126,13 @@ func (w *WSocket) run() {
 	for {
 		select {
 		case conn := <-w.register:
-			StdLogger.Printf("register connectorID:%d;sid:%d\n", conn.connector.GetID(), conn.sessionID)
+			StdLogger.Printf("register connectorID:%d;sid:%d;Address:%s\n",
+				conn.connector.GetID(), conn.sessionID, conn.conn.RemoteAddr().String())
 			w.connections[conn.sessionID] = conn
 		case conn := <-w.unregister:
 			if _, ok := w.connections[conn.sessionID]; ok {
-				StdLogger.Printf("unregister connectorID:%d;sid:%d\n", conn.connector.GetID(), conn.sessionID)
+				StdLogger.Printf("unregister connectorID:%d;sid:%d;Address:%s\n",
+					conn.connector.GetID(), conn.sessionID, conn.conn.RemoteAddr().String())
 				delete(w.connections, conn.sessionID)
 			}
 		case msg := <-w.broadcast:
