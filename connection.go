@@ -186,7 +186,8 @@ func (c *Connection) writePump() {
 			if message.MessageType != websocket.TextMessage {
 				continue
 			}
-
+			c.conn.EnableWriteCompression(true)
+			_ = c.conn.SetCompressionLevel(6)
 			if err = c.conn.WriteMessage(websocket.TextMessage, message.Data); err != nil {
 				goto Close
 			}

@@ -1,8 +1,10 @@
 package wslt
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -35,6 +37,11 @@ var (
 		HandshakeTimeout: time.Second * 3,
 		ReadBufferSize:   1024 * int(KB),
 		WriteBufferSize:  1024 * int(KB),
+		WriteBufferPool: &sync.Pool{
+			New: func() interface{} {
+				return bytes.NewBuffer(make([]byte, 2048*KB))
+			},
+		},
 		Error: func(w http.ResponseWriter, r *http.Request, status int, reason error) {
 			webCtx := &WebContext{r: r, w: w}
 			webCtx.JSON(status, reason.Error())
@@ -43,6 +50,7 @@ var (
 			ok = true
 			return
 		},
+		EnableCompression: true,
 	}
 )
 
