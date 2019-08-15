@@ -97,10 +97,6 @@ func (c *Client) SendMessage(typeString string, msgData interface{}) (err error)
 			StdLogger.Printf("发送数据失败:%s\n", err.Error())
 		}
 	}()
-	if c.IsClosed() {
-		err = errors.New("client is closed")
-		return
-	}
 	if msgData == nil {
 		err = errors.New("数据格式错误,nil pointer")
 		return
@@ -129,9 +125,11 @@ func (c *Client) Dial(urlStr string) (err error) {
 }
 
 func (c *Client) runReadHandle(ctx *ClientContext) {
+	ic := ctx.clone()
 	c.mu.Lock()
-	if handler, has := c.businessHandlers[ctx.Message.StringType]; has {
-		handler(ctx)
+	if handler, has := c.businessHandlers[ic.Message.StringType]; has {
+		inHandler := handler
+		inHandler(ic)
 	}
 	c.mu.Unlock()
 }
@@ -205,11 +203,10 @@ func (c *Client) readPump() {
 		e := wsMsg.UnmarshalCallMsg()
 		if e != nil {
 			//不是一个call msg
-			ctx := &ClientContext{
+			go c.runReadHandle(&ClientContext{
 				Client:  c,
 				Message: biMessage,
-			}
-			c.runReadHandle(ctx)
+			})
 		} else {
 			handler, ok := c.GetHandler(wsMsg.Msg().RequestID)
 			if !ok {

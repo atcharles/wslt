@@ -29,6 +29,15 @@ type (
 	}
 )
 
+//clone ...
+func (ctx *ClientContext) clone() (c *ClientContext) {
+	msgA := *ctx.Message
+	return &ClientContext{
+		Client:  ctx.Client,
+		Message: &msgA,
+	}
+}
+
 func (ctx *Context) BindCallRequest() (msg *ws_rpc.CallMsg, err error) {
 	callMsg, ok := ws_rpc.ValidCallMsg(ctx.Message.Data)
 	if !ok {

@@ -1,6 +1,7 @@
 module github.com/atcharles/wslt
 
 require (
+	github.com/davecgh/go-spew v1.1.1
 	github.com/gorilla/websocket v1.4.1-0.20190629185528-ae1634f6a989
 	github.com/json-iterator/go v1.1.7
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
