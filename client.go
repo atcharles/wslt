@@ -129,18 +129,9 @@ func (c *Client) Dial(urlStr string) (err error) {
 func (c *Client) runReadHandle(ctx *ClientContext) {
 	c.mu.Lock()
 	if handler, has := c.businessHandlers[ctx.Message.StringType]; has {
-		handler.run(ctx)
+		handler(ctx)
 	}
 	c.mu.Unlock()
-}
-
-func (h ClientBusinessHandler) run(ctx *ClientContext) {
-	defer func() {
-		if p := recover(); p != nil {
-			StdLogger.Printf("run handler error:\nFunc:[%s]:\n%v\n", objectName(h), p)
-		}
-	}()
-	go h(ctx)
 }
 
 func (c *Client) writePump() {
