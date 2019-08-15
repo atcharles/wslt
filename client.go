@@ -14,7 +14,6 @@ import (
 
 func NewClient(urlStr string) (ws *Client, err error) {
 	ws = &Client{
-		mu:               sync.Mutex{},
 		conn:             nil,
 		closed:           false,
 		closeChan:        make(chan byte, 1),
@@ -35,7 +34,7 @@ type ClientBusinessHandler func(*ClientContext)
 
 type (
 	Client struct {
-		mu   sync.Mutex
+		mu   sync.RWMutex
 		conn *websocket.Conn
 
 		closed    bool
@@ -83,13 +82,14 @@ func (c *Client) IsClosed() (closed bool) {
 	return
 }
 
+//ReadHandle 设置客户端读取操作函数
 func (c *Client) ReadHandle(typeStr string, handler ClientBusinessHandler) {
 	c.mu.Lock()
 	c.businessHandlers[typeStr] = handler
 	c.mu.Unlock()
 }
 
-//msgData is a BusinessMessage's RawData
+//SendMessage msgData is a BusinessMessage's RawData
 func (c *Client) SendMessage(typeString string, msgData interface{}) (err error) {
 	var msg *WsMessage
 	defer func() {
@@ -124,14 +124,20 @@ func (c *Client) Dial(urlStr string) (err error) {
 	return
 }
 
+//getHandlers ...
+func (c *Client) getHandlers() map[string]ClientBusinessHandler {
+	c.mu.RLock()
+	hs := c.businessHandlers
+	c.mu.RUnlock()
+	return hs
+}
+
 func (c *Client) runReadHandle(ctx *ClientContext) {
 	ic := ctx.clone()
-	c.mu.Lock()
-	if handler, has := c.businessHandlers[ic.Message.StringType]; has {
+	if handler, has := c.getHandlers()[ic.Message.StringType]; has {
 		inHandler := handler
 		inHandler(ic)
 	}
-	c.mu.Unlock()
 }
 
 func (c *Client) writePump() {

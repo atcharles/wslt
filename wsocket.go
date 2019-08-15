@@ -60,7 +60,7 @@ type (
 	IterationConnectionsFunc func(id int64, connection *Connection) bool
 
 	WSocket struct {
-		mu *sync.Mutex
+		mu *sync.RWMutex
 
 		session *Session
 		//sid=>connector
@@ -84,16 +84,26 @@ func (w *WSocket) runReadHandle(ctx *Context) {
 			StdLogger.Printf("run handler error:%v\n", p)
 		}
 	}()
-	if handler, has := w.businessHandlers[ctx.Message.StringType]; has {
+	if handler, has := w.getRHandlers()[ctx.Message.StringType]; has {
 		go handler(ctx)
 	}
 }
 
+//getRHandlers ...
+func (w *WSocket) getRHandlers() map[string]BusinessHandler {
+	w.mu.RLock()
+	hs := w.businessHandlers
+	w.mu.RUnlock()
+	return hs
+}
+
 func (w *WSocket) ReadHandle(msgType string, handler BusinessHandler) {
-	if _, has := w.businessHandlers[msgType]; has {
+	if _, has := w.getRHandlers()[msgType]; has {
 		panic(fmt.Sprintf("BusinessHandler type:%s exists", msgType))
 	}
+	w.mu.Lock()
 	w.businessHandlers[msgType] = handler
+	w.mu.Unlock()
 }
 
 func (w *WSocket) IterationConnections(fn IterationConnectionsFunc) {
@@ -102,7 +112,7 @@ func (w *WSocket) IterationConnections(fn IterationConnectionsFunc) {
 
 func newWSocket() *WSocket {
 	ws := &WSocket{
-		mu:               &sync.Mutex{},
+		mu:               &sync.RWMutex{},
 		session:          GlobalSession(),
 		connections:      make(map[int64]*Connection),
 		register:         make(chan *Connection, 1),
