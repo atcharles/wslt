@@ -122,7 +122,9 @@ func (c *Client) SendMessage(typeString string, msgData interface{}) (err error)
 }
 
 func (c *Client) Dial(urlStr string) (err error) {
-	c.conn, _, err = websocket.DefaultDialer.Dial(urlStr, nil)
+	dial := websocket.DefaultDialer
+	dial.HandshakeTimeout = time.Second * 3
+	c.conn, _, err = dial.Dial(urlStr, nil)
 	return
 }
 
