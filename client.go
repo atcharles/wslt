@@ -101,6 +101,10 @@ func (c *Client) SendMessage(typeString string, msgData interface{}) (err error)
 		err = errors.New("数据格式错误,nil pointer")
 		return
 	}
+	if c.IsClosed() {
+		StdLogger.Printf("发送消息[%#v]时,客户端已断开连接", msgData)
+		return
+	}
 	msg, err = CreateWsMessage(typeString, msgData)
 	if err != nil {
 		err = errors.New("数据格式错误")
