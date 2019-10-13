@@ -8,3 +8,5 @@ require (
 	github.com/modern-go/reflect2 v1.0.1 // indirect
 	github.com/segmentio/ksuid v1.0.3-0.20181018143815-b85603ccf83f
 )
+
+go 1.13
