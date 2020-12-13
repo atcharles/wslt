@@ -1,19 +1,31 @@
-# Binaries for programs and plugins
+# Created by .ignore support plugin (hsz.mobi)
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-
-# Test binary, build with `go test -c`
 *.test
-
-# Output of the go coverage tool, specifically when used with LiteIDE
 *.out
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+
+
 .idea/
-cli/
-samples/
-*_test.go
 go.sum
-ts
-wslt
+*_test.*
