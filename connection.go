@@ -179,7 +179,7 @@ func (c *Connection) writePump() {
 		case message, ok := <-c.sent:
 			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
-				err = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				goto Close
 			}
 

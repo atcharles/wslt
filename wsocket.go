@@ -34,7 +34,6 @@ func (w *WSocket) Handler(connector Connector) http.HandlerFunc {
 			return
 		}
 		StdLogger.Printf("接受连接:%s\n", httpRequestAddr(r))
-		return
 	}
 }
 

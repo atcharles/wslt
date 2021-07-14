@@ -1,9 +1,6 @@
 package wslt
 
 import (
-	"reflect"
-	"runtime"
-
 	jsoniter "github.com/json-iterator/go"
 	"github.com/json-iterator/go/extra"
 )
@@ -30,7 +27,7 @@ func removeSliceInt64(rs *[]int64, val int64) {
 	*rs = append(sl[:r], sl[r+1:]...)
 }
 
-func objectName(obj interface{}) string {
+/*func objectName(obj interface{}) string {
 	v := reflect.ValueOf(obj)
 	t := v.Type()
 	switch t.Kind() {
@@ -42,4 +39,4 @@ func objectName(obj interface{}) string {
 		return runtime.FuncForPC(v.Pointer()).Name()
 	}
 	return t.String()
-}
+}*/

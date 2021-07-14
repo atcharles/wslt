@@ -111,12 +111,12 @@ func (c *Client) SendMessage(typeString string, msgData interface{}) (err error)
 		return
 	}
 	select {
-	case c.sent <- msg:
 	case <-c.closeChan:
 		err = errors.New("the sent channel is closed")
 		return
 	default:
-		err = errors.New("the sent channel is full")
+		c.sent <- msg
+		//err = errors.New("the sent channel is full")
 	}
 	return
 }
