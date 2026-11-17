@@ -18,6 +18,10 @@ const (
 	TB                          // 1 << (10*4)
 )
 const (
+	defaultBroadcastQueueSize  = 1024
+	defaultConnectionQueueSize = 256
+	defaultBroadcastTimeout    = 2 * time.Second
+
 	// Time allowed to write a message to the peer.
 	writeWait = 5 * time.Second
 

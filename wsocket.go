@@ -1,12 +1,15 @@
 package wslt
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 var StdLogger = log.New(os.Stdout, "[WS-LT] ", log.LstdFlags)
@@ -15,6 +18,12 @@ type IterationConnectionsFunc func(sessionID string, connection *Connection) boo
 
 type WSocket struct {
 	mu *sync.RWMutex
+
+	done                chan struct{}
+	closeOnce           sync.Once
+	broadcastQueueSize  int
+	connectionQueueSize int
+	broadcastTimeout    time.Duration
 
 	connections map[string]*Connection
 
@@ -44,16 +53,73 @@ func (w *WSocket) AddBusinessHandler(msgType string, handler BusinessHandler) {
 }
 
 func (w *WSocket) IterationConnections(fn IterationConnectionsFunc) {
-	w.iterationChan <- fn
+	select {
+	case w.iterationChan <- fn:
+	case <-w.done:
+	}
 }
 
-func (w *WSocket) SendToAll(msgType string, data interface{}) (err error) {
-	var msg *WsMessage
-	if msg, err = CreateWsMessage(msgType, data); err != nil {
-		return
+// SendToAll queues a broadcast, waiting at most the configured timeout.
+func (w *WSocket) SendToAll(msgType string, data interface{}) error {
+	ctx, cancel := context.WithTimeout(context.Background(), w.broadcastTimeout)
+	defer cancel()
+	return w.SendToAllContext(ctx, msgType, data)
+}
+
+// SendToAllContext waits for queue space until ctx is canceled or the hub closes.
+// Success means queued, not delivered; slow peers are disconnected during fanout.
+func (w *WSocket) SendToAllContext(ctx context.Context, msgType string, data interface{}) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	w.broadcast <- msg
-	return
+	select {
+	case <-w.done:
+		return errors.New("websocket hub is closed")
+	default:
+	}
+	msg, err := CreateWsMessage(msgType, data)
+	if err != nil {
+		return err
+	}
+	select {
+	case w.broadcast <- msg:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-w.done:
+		return errors.New("websocket hub is closed")
+	}
+}
+
+// Close stops the hub and closes its connections. It is safe to call repeatedly.
+func (w *WSocket) Close() {
+	w.closeOnce.Do(func() { close(w.done) })
+	for _, conn := range w.connectionSnapshot() {
+		conn.close()
+	}
+}
+
+// ConnectionCount returns the current number of registered connections.
+func (w *WSocket) ConnectionCount() int {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return len(w.connections)
+}
+
+func (w *WSocket) connectionSnapshot() map[string]*Connection {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	connections := make(map[string]*Connection, len(w.connections))
+	for sid, conn := range w.connections {
+		connections[sid] = conn
+	}
+	return connections
+}
+
+func (w *WSocket) removeConnection(conn *Connection) {
+	w.mu.Lock()
+	delete(w.connections, conn.sessionID)
+	w.mu.Unlock()
 }
 
 // SendToSession ...
@@ -141,22 +207,34 @@ func (w *WSocket) getRHandlers() map[string]BusinessHandler {
 func (w *WSocket) run() {
 	for {
 		select {
+		case <-w.done:
+			return
 		case conn := <-w.register:
-			StdLogger.Printf("register sid:%s; Address:%s", conn.sessionID, conn.ip)
-			w.connections[conn.sessionID] = conn
-		case conn := <-w.unregister:
-			if _, ok := w.connections[conn.sessionID]; ok {
-				StdLogger.Printf("unregister sid:%s; Address:%s", conn.sessionID, conn.ip)
-				delete(w.connections, conn.sessionID)
+			w.mu.Lock()
+			if !conn.IsClosed() {
+				select {
+				case <-w.done:
+				default:
+					w.connections[conn.sessionID] = conn
+				}
 			}
+			w.mu.Unlock()
+			select {
+			case <-w.done:
+				conn.close()
+			default:
+			}
+		case conn := <-w.unregister:
+			w.removeConnection(conn)
 		case msg := <-w.broadcast:
-			for _, conn := range w.connections {
-				if e := conn.SendWsMessage(msg); e != nil {
+			for _, conn := range w.connectionSnapshot() {
+				if e := conn.trySendWsMessage(msg); e != nil {
+					conn.close()
 					StdLogger.Printf("broadcast error :%v; sid:%s", e, conn.sessionID)
 				}
 			}
 		case fn := <-w.iterationChan:
-			for key, value := range w.connections {
+			for key, value := range w.connectionSnapshot() {
 				if !fn(key, value) {
 					break
 				}
@@ -173,17 +251,21 @@ func (w *WSocket) runReadHandle(ctx *Context) {
 
 func NewWSocket(opts ...WsOptionFunc) *WSocket {
 	ws := &WSocket{
-		mu:               &sync.RWMutex{},
-		connections:      make(map[string]*Connection),
-		register:         make(chan *Connection),
-		unregister:       make(chan *Connection),
-		broadcast:        make(chan *WsMessage, 10*MB),
-		businessHandlers: make(map[string]BusinessHandler),
-		iterationChan:    make(chan IterationConnectionsFunc, 1),
+		mu:                  &sync.RWMutex{},
+		connections:         make(map[string]*Connection),
+		register:            make(chan *Connection),
+		unregister:          make(chan *Connection),
+		done:                make(chan struct{}),
+		broadcastQueueSize:  defaultBroadcastQueueSize,
+		connectionQueueSize: defaultConnectionQueueSize,
+		broadcastTimeout:    defaultBroadcastTimeout,
+		businessHandlers:    make(map[string]BusinessHandler),
+		iterationChan:       make(chan IterationConnectionsFunc, 1),
 	}
 	for _, opt := range opts {
 		opt(ws)
 	}
+	ws.broadcast = make(chan *WsMessage, ws.broadcastQueueSize)
 	go ws.run()
 	return ws
 }

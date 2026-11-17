@@ -86,17 +86,24 @@ func (c *Connection) Ws() *WSocket { return c.ws }
 
 func (c *Connection) close() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed {
+		c.mu.Unlock()
 		return
 	}
 	c.closed = true
-	close(c.sent)
 	close(c.closeChan)
+	c.mu.Unlock()
 	if c.conn != nil {
 		_ = c.conn.Close()
 	}
-	c.ws.unregister <- c
+	// Never wait for the hub: close may be called by the hub itself.
+	select {
+	case c.ws.unregister <- c:
+	case <-c.ws.done:
+		c.ws.removeConnection(c)
+	default:
+		c.ws.removeConnection(c)
+	}
 }
 
 func (c *Connection) readPumpReadMessage() (err error) {
@@ -126,12 +133,24 @@ func (c *Connection) readPumpReadMessage() (err error) {
 }
 
 func (c *Connection) register() {
-	go c.runReadPump()
-	go c.runWritePump()
-	c.ws.register <- c
+	select {
+	case c.ws.register <- c:
+		go c.runReadPump()
+		go c.runWritePump()
+	case <-c.closeChan:
+	case <-c.ws.done:
+		c.close()
+	}
 }
 
 func (c *Connection) runReadPump() {
+	c.conn.SetReadLimit(maxMessageSize)
+	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(string) error {
+		//log.Println("收到客户端的Pong")
+		return c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	})
+
 	for {
 		if c.IsClosed() {
 			return
@@ -159,12 +178,6 @@ func (c *Connection) runReadPump() {
 func (c *Connection) runWritePump() {
 	c.conn.EnableWriteCompression(true)
 	_ = c.conn.SetCompressionLevel(6)
-	c.conn.SetReadLimit(maxMessageSize)
-	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
-	c.conn.SetPongHandler(func(string) error {
-		//log.Println("收到客户端的Pong")
-		return c.conn.SetReadDeadline(time.Now().Add(pongWait))
-	})
 
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
@@ -179,17 +192,15 @@ func (c *Connection) runWritePump() {
 		select {
 		case <-c.closeChan:
 			return
-		case message, ok := <-c.sent:
-			if !ok {
-				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
+		case message := <-c.sent:
 			if err := writeMessage2conn(c.conn, message); err != nil {
 				StdLogger.Printf("runWritePump write error: %v", err)
 				return
 			}
 		case <-ticker.C:
-			c.sent <- &WsMessage{Type: websocket.PingMessage}
+			if err := c.writePing(); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -199,7 +210,7 @@ func newConnection(conn *websocket.Conn, ws *WSocket) (con *Connection) {
 		ws:        ws,
 		sessionID: nanoid(),
 		conn:      conn,
-		sent:      make(chan *WsMessage, 100*KB),
+		sent:      make(chan *WsMessage, ws.connectionQueueSize),
 		closed:    false,
 		closeChan: make(chan struct{}),
 	}
@@ -212,4 +223,23 @@ func writeMessage2conn(conn *websocket.Conn, msg *WsMessage) (err error) {
 	_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
 	err = conn.WriteMessage(msg.Type, msg.Data)
 	return
+}
+
+// trySendWsMessage keeps a slow peer from blocking the broadcast loop.
+func (c *Connection) trySendWsMessage(msg *WsMessage) error {
+	if c.IsClosed() {
+		return errors.New("connection is closed")
+	}
+	select {
+	case <-c.closeChan:
+		return errors.New("connection is closed")
+	case c.sent <- msg:
+		return nil
+	default:
+		return errors.New("connection messages queue is full")
+	}
+}
+
+func (c *Connection) writePing() error {
+	return writeMessage2conn(c.conn, &WsMessage{Type: websocket.PingMessage})
 }
